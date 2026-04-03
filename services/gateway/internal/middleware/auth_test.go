@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
-	"github.com/yourorg/instagram-clone/services/gateway/internal/middleware"
+	"github.com/mimsewelt/1984/services/gateway/internal/middleware"
 )
 
 const testSecret = "test-secret-minimum-32-characters!!"
@@ -178,7 +178,7 @@ func TestAuthenticate_AlgNone_Rejected(t *testing.T) {
 	})
 
 	// Manually craft an unsigned JWT.
-	header := "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0"    // {"alg":"none","typ":"JWT"}
+	header := "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0"               // {"alg":"none","typ":"JWT"}
 	payload := "eyJ1c2VyX2lkIjoiYWRtaW4iLCJleHAiOjk5OTk5OTk5OTl9" // {"user_id":"admin","exp":9999999999}
 	noneToken := header + "." + payload + "."
 

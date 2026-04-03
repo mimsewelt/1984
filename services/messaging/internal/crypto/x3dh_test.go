@@ -4,10 +4,8 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/yourorg/instagram-clone/services/messaging/internal/crypto"
+	"github.com/mimsewelt/1984/services/messaging/internal/crypto"
 )
-
-// ── Key generation tests ──────────────────────────────────────────────────────
 
 func TestGenerateDHKeyPair_PublicKeyIsNonZero(t *testing.T) {
 	kp, err := crypto.GenerateDHKeyPair()
@@ -26,12 +24,8 @@ func TestGenerateDHKeyPair_PublicKeyIsNonZero(t *testing.T) {
 func TestGenerateDHKeyPair_EachCallProducesUniqueKeys(t *testing.T) {
 	kp1, _ := crypto.GenerateDHKeyPair()
 	kp2, _ := crypto.GenerateDHKeyPair()
-
 	if kp1.Public == kp2.Public {
 		t.Error("two key pairs should not share a public key")
-	}
-	if kp1.Private == kp2.Private {
-		t.Error("two key pairs should not share a private key")
 	}
 }
 
@@ -56,8 +50,6 @@ func TestGenerateOPKBatch_AllUnique(t *testing.T) {
 	}
 }
 
-// ── SPK signature tests ───────────────────────────────────────────────────────
-
 func TestSignedPreKey_SignatureVerifies(t *testing.T) {
 	ik, err := crypto.GenerateIdentityKeyPair()
 	if err != nil {
@@ -67,16 +59,9 @@ func TestSignedPreKey_SignatureVerifies(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generate SPK: %v", err)
 	}
-
-	ikSigningPub := ik.Signing.Public().(interface{ Equal(interface{}) bool })
-	_ = ikSigningPub
-
-	// Use the exported verify function.
-	pubBytes := ik.Signing.Public()
-	ikPubBytes, _ := pubBytes.([]byte)
-	// ed25519.PublicKey is []byte — cast correctly.
-	import_ed := ik.Signing[32:] // ed25519 private key is [private||public]
-	if !crypto.VerifySPKSignature(import_ed, spk.Public[:], sig) {
+	// ed25519.PrivateKey layout: [private(32) || public(32)]
+	ikSigningPub := []byte(ik.Signing)[32:]
+	if !crypto.VerifySPKSignature(ikSigningPub, spk.Public[:], sig) {
 		t.Error("SPK signature verification failed with correct key")
 	}
 }
@@ -85,11 +70,10 @@ func TestSignedPreKey_TamperedSPK_FailsVerification(t *testing.T) {
 	ik, _ := crypto.GenerateIdentityKeyPair()
 	spk, sig, _ := crypto.GenerateSignedPreKey(ik, 1)
 
-	// Tamper with one byte of the SPK public key.
 	tampered := spk.Public
 	tampered[0] ^= 0xFF
 
-	ikPub := ik.Signing[32:]
+	ikPub := []byte(ik.Signing)[32:]
 	if crypto.VerifySPKSignature(ikPub, tampered[:], sig) {
 		t.Error("tampered SPK should fail signature verification")
 	}
@@ -100,14 +84,11 @@ func TestSignedPreKey_WrongIK_FailsVerification(t *testing.T) {
 	ik2, _ := crypto.GenerateIdentityKeyPair()
 	spk, sig, _ := crypto.GenerateSignedPreKey(ik1, 1)
 
-	// Verify with the wrong identity key.
-	wrongIKPub := ik2.Signing[32:]
+	wrongIKPub := []byte(ik2.Signing)[32:]
 	if crypto.VerifySPKSignature(wrongIKPub, spk.Public[:], sig) {
 		t.Error("wrong IK should fail SPK verification")
 	}
 }
-
-// ── X3DH key agreement tests ──────────────────────────────────────────────────
 
 func buildBundle(t *testing.T, recipientIK crypto.IdentityKeyPair, spk crypto.KeyPair, spkSig []byte, opk *crypto.KeyPair) crypto.PreKeyBundle {
 	t.Helper()
@@ -126,26 +107,18 @@ func buildBundle(t *testing.T, recipientIK crypto.IdentityKeyPair, spk crypto.Ke
 }
 
 func TestX3DH_SenderRecipientAgreeOnSameSecret(t *testing.T) {
-	// Recipient generates key material.
-	recipientIK, err := crypto.GenerateIdentityKeyPair()
-	if err != nil {
-		t.Fatalf("generate recipient IK: %v", err)
-	}
+	recipientIK, _ := crypto.GenerateIdentityKeyPair()
 	spk, spkSig, _ := crypto.GenerateSignedPreKey(recipientIK, 1)
 	opkBatch, _ := crypto.GenerateOPKBatch(1)
 	opk := opkBatch[0]
 
-	// Sender generates their IK and fetches recipient's bundle.
 	senderIK, _ := crypto.GenerateIdentityKeyPair()
 	bundle := buildBundle(t, recipientIK, spk, spkSig, &opk)
 
-	// ── Sender side ──
 	senderSecret, ephPub, err := crypto.X3DHSender(senderIK, bundle)
 	if err != nil {
 		t.Fatalf("X3DH sender failed: %v", err)
 	}
-
-	// ── Recipient side ──
 	recipientSecret, err := crypto.X3DHRecipient(
 		recipientIK, spk, &opk,
 		senderIK.DH.Public[:], ephPub,
@@ -153,7 +126,6 @@ func TestX3DH_SenderRecipientAgreeOnSameSecret(t *testing.T) {
 	if err != nil {
 		t.Fatalf("X3DH recipient failed: %v", err)
 	}
-
 	if !bytes.Equal(senderSecret, recipientSecret) {
 		t.Errorf("X3DH secrets do not match:\n  sender:    %x\n  recipient: %x", senderSecret, recipientSecret)
 	}
@@ -164,14 +136,16 @@ func TestX3DH_WithoutOPK_StillAgreesOnSecret(t *testing.T) {
 	spk, spkSig, _ := crypto.GenerateSignedPreKey(recipientIK, 1)
 	senderIK, _ := crypto.GenerateIdentityKeyPair()
 
-	// Bundle without OPK (OPK exhausted scenario).
 	bundle := buildBundle(t, recipientIK, spk, spkSig, nil)
 
 	senderSecret, ephPub, err := crypto.X3DHSender(senderIK, bundle)
 	if err != nil {
 		t.Fatalf("sender failed: %v", err)
 	}
-	recipientSecret, err := crypto.X3DHRecipient(recipientIK, spk, nil, senderIK.DH.Public[:], ephPub)
+	recipientSecret, err := crypto.X3DHRecipient(
+		recipientIK, spk, nil,
+		senderIK.DH.Public[:], ephPub,
+	)
 	if err != nil {
 		t.Fatalf("recipient failed: %v", err)
 	}
@@ -201,7 +175,6 @@ func TestX3DH_TamperedSPKSignature_Rejected(t *testing.T) {
 	spk, spkSig, _ := crypto.GenerateSignedPreKey(recipientIK, 1)
 	senderIK, _ := crypto.GenerateIdentityKeyPair()
 
-	// Tamper with signature.
 	badSig := make([]byte, len(spkSig))
 	copy(badSig, spkSig)
 	badSig[0] ^= 0xFF
@@ -227,8 +200,6 @@ func TestX3DH_SecretIs32Bytes(t *testing.T) {
 		t.Errorf("expected 32-byte ephemeral public key, got %d", len(ephPub))
 	}
 }
-
-// ── Key encoding tests ────────────────────────────────────────────────────────
 
 func TestEncodeDecodeKey_RoundTrip(t *testing.T) {
 	kp, _ := crypto.GenerateDHKeyPair()

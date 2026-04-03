@@ -7,7 +7,7 @@ import (
 
  "github.com/jackc/pgx/v5"
  "github.com/jackc/pgx/v5/pgxpool"
- "github.com/yourorg/instagram-clone/services/auth/internal/model"
+ "github.com/mimsewelt/1984/services/auth/internal/model"
 )
 
 var ErrNotFound = errors.New("not found")

@@ -8,11 +8,11 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/yourorg/instagram-clone/services/auth/internal/handler"
-	"github.com/yourorg/instagram-clone/services/auth/internal/model"
-	"github.com/yourorg/instagram-clone/services/auth/internal/repository"
-	"github.com/yourorg/instagram-clone/services/auth/internal/service"
-	"github.com/yourorg/instagram-clone/shared/logger"
+	"github.com/mimsewelt/1984/services/auth/internal/handler"
+	"github.com/mimsewelt/1984/services/auth/internal/model"
+	"github.com/mimsewelt/1984/services/auth/internal/repository"
+	"github.com/mimsewelt/1984/services/auth/internal/service"
+	"github.com/mimsewelt/1984/shared/logger"
 )
 
 // ── Fakes (same pattern as service tests) ────────────────────────────────────
@@ -134,9 +134,9 @@ func TestRegisterHandler_Returns201(t *testing.T) {
 func TestRegisterHandler_MissingFields_Returns400(t *testing.T) {
 	h := newTestHandler()
 	cases := []map[string]string{
-		{"username": "a", "email": "x@x.com", "password": "short"},  // password too short
-		{"username": "ab", "email": "x@x.com", "password": "LongEnough1!"},  // username too short
-		{"username": "valid", "email": "", "password": "LongEnough1!"},       // missing email
+		{"username": "a", "email": "x@x.com", "password": "short"},         // password too short
+		{"username": "ab", "email": "x@x.com", "password": "LongEnough1!"}, // username too short
+		{"username": "valid", "email": "", "password": "LongEnough1!"},     // missing email
 	}
 	for _, body := range cases {
 		rr := postJSON(t, h.Register, "/register", body)

@@ -6,7 +6,7 @@ import (
  "strings"
 
  "github.com/golang-jwt/jwt/v5"
- "github.com/yourorg/instagram-clone/shared/response"
+ "github.com/mimsewelt/1984/shared/response"
 )
 
 type contextKey string

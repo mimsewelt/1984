@@ -1,13 +1,19 @@
-module github.com/yourorg/instagram-clone/services/gateway
+module github.com/mimsewelt/1984/services/gateway
 
 go 1.23
 
 require (
- github.com/go-chi/chi/v5 v5.1.0
- github.com/go-chi/httprate v0.14.1
- github.com/golang-jwt/jwt/v5 v5.2.1
- github.com/yourorg/instagram-clone/shared v0.0.0
- go.uber.org/zap v1.27.0
+	github.com/go-chi/chi/v5 v5.1.0
+	github.com/go-chi/httprate v0.14.1
+	github.com/golang-jwt/jwt/v5 v5.2.1
+	github.com/google/uuid v1.6.0
+	github.com/mimsewelt/1984/shared v0.0.0
+	go.uber.org/zap v1.27.0
 )
 
-replace github.com/yourorg/instagram-clone/shared => ../../shared
+require (
+	github.com/cespare/xxhash/v2 v2.3.0 // indirect
+	go.uber.org/multierr v1.10.0 // indirect
+)
+
+replace github.com/mimsewelt/1984/shared => ../../shared

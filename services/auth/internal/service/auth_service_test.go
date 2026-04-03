@@ -7,9 +7,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/yourorg/instagram-clone/services/auth/internal/model"
-	"github.com/yourorg/instagram-clone/services/auth/internal/repository"
-	"github.com/yourorg/instagram-clone/services/auth/internal/service"
+	"github.com/mimsewelt/1984/services/auth/internal/model"
+	"github.com/mimsewelt/1984/services/auth/internal/repository"
+	"github.com/mimsewelt/1984/services/auth/internal/service"
 	"golang.org/x/crypto/bcrypt"
 )
 
