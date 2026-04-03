@@ -1,113 +1,97 @@
-package handler
+package main
 
 import (
-	"encoding/json"
+	"context"
 	"errors"
 	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
-	"github.com/mimsewelt/1984/services/auth/internal/model"
+	"github.com/go-chi/chi/v5"
+	chimw "github.com/go-chi/chi/v5/middleware"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/mimsewelt/1984/services/auth/internal/handler"
+	"github.com/mimsewelt/1984/services/auth/internal/repository"
 	"github.com/mimsewelt/1984/services/auth/internal/service"
-	"github.com/mimsewelt/1984/shared/response"
+	"github.com/mimsewelt/1984/shared/logger"
 	"go.uber.org/zap"
 )
 
-type AuthHandler struct {
-	svc *service.AuthService
-	log *zap.Logger
-}
+func main() {
+	log := logger.New()
+	defer logger.Sync()
 
-func NewAuthHandler(svc *service.AuthService, log *zap.Logger) *AuthHandler {
-	return &AuthHandler{svc: svc, log: log}
-}
+	dbURL := mustEnv("DATABASE_URL")
+	jwtSecret := mustEnv("JWT_SECRET")
+	port := getEnv("PORT", "9001")
 
-// POST /register
-func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
-	var req model.RegisterRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		response.BadRequest(w, "invalid request body")
-		return
-	}
-	if err := validateRegister(&req); err != nil {
-		response.BadRequest(w, err.Error())
-		return
-	}
-
-	resp, err := h.svc.Register(r.Context(), &req)
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, dbURL)
 	if err != nil {
-		switch {
-		case errors.Is(err, service.ErrUserExists):
-			response.Error(w, http.StatusConflict, "username or email already taken")
-		default:
-			h.log.Error("register error", zap.Error(err))
-			response.InternalError(w)
+		log.Fatal("failed to connect to database", zap.Error(err))
+	}
+	defer pool.Close()
+
+	if err := pool.Ping(ctx); err != nil {
+		log.Fatal("database ping failed", zap.Error(err))
+	}
+
+	userRepo := repository.NewUserRepository(pool)
+	tokenRepo := repository.NewRefreshTokenRepository(pool)
+	authSvc := service.NewAuthService(userRepo, tokenRepo, jwtSecret)
+	authHandler := handler.NewAuthHandler(authSvc, log)
+
+	r := chi.NewRouter()
+	r.Use(chimw.RealIP)
+	r.Use(chimw.Recoverer)
+	r.Use(chimw.Timeout(30 * time.Second))
+
+	r.Post("/register", authHandler.Register)
+	r.Post("/login", authHandler.Login)
+	r.Post("/refresh", authHandler.Refresh)
+	r.Post("/logout", authHandler.Logout)
+	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	})
+
+	srv := &http.Server{
+		Addr:         ":" + port,
+		Handler:      r,
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 15 * time.Second,
+	}
+
+	go func() {
+		log.Info("auth service listening", zap.String("addr", srv.Addr))
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Fatal("server error", zap.Error(err))
 		}
-		return
-	}
+	}()
 
-	response.Created(w, resp)
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+
+	shutCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	_ = srv.Shutdown(shutCtx)
+	log.Info("auth service stopped")
 }
 
-// POST /login
-func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
-	var req model.LoginRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		response.BadRequest(w, "invalid request body")
-		return
+func mustEnv(key string) string {
+	v := os.Getenv(key)
+	if v == "" {
+		panic("required env var not set: " + key)
 	}
-
-	resp, err := h.svc.Login(r.Context(), &req)
-	if err != nil {
-		switch {
-		case errors.Is(err, service.ErrInvalidCredentials):
-			// Always return the same message to prevent user enumeration.
-			response.Error(w, http.StatusUnauthorized, "invalid email or password")
-		default:
-			h.log.Error("login error", zap.Error(err))
-			response.InternalError(w)
-		}
-		return
-	}
-
-	response.OK(w, resp)
+	return v
 }
 
-// POST /refresh
-func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
-	var req model.RefreshRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		response.BadRequest(w, "invalid request body")
-		return
+func getEnv(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
 	}
-
-	deviceID := r.Header.Get("X-Device-Id")
-	if deviceID == "" {
-		deviceID = "web"
-	}
-
-	resp, err := h.svc.Refresh(r.Context(), req.RefreshToken, deviceID)
-	if err != nil {
-		response.Error(w, http.StatusUnauthorized, "invalid or expired refresh token")
-		return
-	}
-
-	response.OK(w, resp)
-}
-
-// POST /logout — client simply discards tokens; server can optionally invalidate.
-func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
-	// In a full implementation: parse refresh token, delete from DB.
-	response.OK(w, map[string]string{"message": "logged out"})
-}
-
-func validateRegister(req *model.RegisterRequest) error {
-	if len(req.Username) < 3 || len(req.Username) > 30 {
-		return errors.New("username must be 3–30 characters")
-	}
-	if len(req.Password) < 8 {
-		return errors.New("password must be at least 8 characters")
-	}
-	if req.Email == "" {
-		return errors.New("email is required")
-	}
-	return nil
+	return fallback
 }

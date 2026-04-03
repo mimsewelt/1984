@@ -24,29 +24,19 @@ func main() {
 	defer logger.Sync()
 
 	cfg := config.Load()
-
 	r := chi.NewRouter()
 
-	// ── Global middleware ────────────────────────────────────────────────────
 	r.Use(chimw.RealIP)
 	r.Use(chimw.Recoverer)
 	r.Use(middleware.RequestLogger(log))
 	r.Use(chimw.StripSlashes)
-
-	// Global rate limit: 100 req / 60s per IP (overridable via env)
 	r.Use(httprate.LimitByIP(cfg.RateLimitRequests, cfg.RateLimitWindow))
 
-	// ── Public routes (no auth) ──────────────────────────────────────────────
 	r.Get("/health", handler.Health)
-
-	// Auth service — register, login, refresh (no JWT required)
 	r.Mount("/api/v1/auth", handler.Proxy(cfg.AuthServiceURL, "/api/v1/auth", log))
 
-	// ── Protected routes ─────────────────────────────────────────────────────
 	r.Group(func(r chi.Router) {
 		r.Use(middleware.Authenticate(cfg.JWTSecret))
-
-		// Inject user_id header so downstream services trust it without re-parsing JWT.
 		r.Use(func(next http.Handler) http.Handler {
 			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if uid, ok := middleware.UserIDFromContext(r.Context()); ok {
@@ -55,14 +45,12 @@ func main() {
 				next.ServeHTTP(w, r)
 			})
 		})
-
-		r.Mount("/api/v1/posts", handler.Proxy(cfg.PostsServiceURL, "/api/v1/posts", log))
-		r.Mount("/api/v1/users", handler.Proxy(cfg.UsersServiceURL, "/api/v1/users", log))
-		r.Mount("/api/v1/media", handler.Proxy(cfg.MediaServiceURL, "/api/v1/media", log))
+		r.Mount("/api/v1/posts",    handler.Proxy(cfg.PostsServiceURL, "/api/v1/posts", log))
+		r.Mount("/api/v1/users",    handler.Proxy(cfg.UsersServiceURL, "/api/v1/users", log))
+		r.Mount("/api/v1/media",    handler.Proxy(cfg.MediaServiceURL, "/api/v1/media", log))
 		r.Mount("/api/v1/messages", handler.Proxy(cfg.MsgServiceURL, "/api/v1/messages", log))
 	})
 
-	// ── HTTP server with graceful shutdown ───────────────────────────────────
 	srv := &http.Server{
 		Addr:         ":" + cfg.Port,
 		Handler:      r,
@@ -82,12 +70,8 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 
-	log.Info("shutting down gracefully…")
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-
-	if err := srv.Shutdown(ctx); err != nil {
-		log.Error("shutdown error", zap.Error(err))
-	}
+	_ = srv.Shutdown(ctx)
 	log.Info("gateway stopped")
 }

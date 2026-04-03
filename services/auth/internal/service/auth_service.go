@@ -1,130 +1,168 @@
-package repository
+package service
 
 import (
- "context"
- "errors"
- "time"
+	"context"
+	"crypto/rand"
+	"encoding/base64"
+	"errors"
+	"time"
 
- "github.com/jackc/pgx/v5"
- "github.com/jackc/pgx/v5/pgxpool"
- "github.com/mimsewelt/1984/services/auth/internal/model"
+	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
+	"github.com/mimsewelt/1984/services/auth/internal/model"
+	"github.com/mimsewelt/1984/services/auth/internal/repository"
+	"golang.org/x/crypto/bcrypt"
 )
 
-var ErrNotFound = errors.New("not found")
-var ErrConflict = errors.New("already exists")
+var (
+	ErrInvalidCredentials = errors.New("invalid credentials")
+	ErrUserExists         = errors.New("user already exists")
+	ErrTokenExpired       = errors.New("token expired or invalid")
+)
 
-type UserRepository struct {
- db *pgxpool.Pool
+const (
+	bcryptCost           = 12
+	accessTokenDuration  = 15 * time.Minute
+	refreshTokenDuration = 30 * 24 * time.Hour
+)
+
+type Claims struct {
+	UserID   string `json:"user_id"`
+	Username string `json:"username"`
+	jwt.RegisteredClaims
 }
 
-func NewUserRepository(db *pgxpool.Pool) *UserRepository {
- return &UserRepository{db: db}
+type AuthService struct {
+	users     *repository.UserRepository
+	tokens    *repository.RefreshTokenRepository
+	jwtSecret []byte
 }
 
-func (r *UserRepository) Create(ctx context.Context, u *model.User) error {
- q := `
-  INSERT INTO users (id, username, email, password_hash, display_name, created_at, updated_at)
-  VALUES ($1, $2, $3, $4, $5, $6, $7)`
-
- _, err := r.db.Exec(ctx, q,
-  u.ID, u.Username, u.Email, u.PasswordHash,
-  u.DisplayName, u.CreatedAt, u.UpdatedAt,
- )
- if err != nil {
-  if isUniqueViolation(err) {
-   return ErrConflict
-  }
-  return err
- }
- return nil
+func NewAuthService(
+	users *repository.UserRepository,
+	tokens *repository.RefreshTokenRepository,
+	jwtSecret string,
+) *AuthService {
+	return &AuthService{users: users, tokens: tokens, jwtSecret: []byte(jwtSecret)}
 }
 
-func (r *UserRepository) FindByEmail(ctx context.Context, email string) (*model.User, error) {
- q := `SELECT id, username, email, password_hash, display_name, bio, avatar_url, created_at, updated_at
-       FROM users WHERE email = $1 AND deleted_at IS NULL`
-
- u := &model.User{}
- err := r.db.QueryRow(ctx, q, email).Scan(
-  &u.ID, &u.Username, &u.Email, &u.PasswordHash,
-  &u.DisplayName, &u.Bio, &u.AvatarURL, &u.CreatedAt, &u.UpdatedAt,
- )
- if errors.Is(err, pgx.ErrNoRows) {
-  return nil, ErrNotFound
- }
- return u, err
+func (s *AuthService) Register(ctx context.Context, req *model.RegisterRequest) (*model.AuthResponse, error) {
+	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcryptCost)
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now().UTC()
+	user := &model.User{
+		ID:           uuid.NewString(),
+		Username:     req.Username,
+		Email:        req.Email,
+		PasswordHash: string(hash),
+		DisplayName:  req.DisplayName,
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+	if err := s.users.Create(ctx, user); err != nil {
+		if errors.Is(err, repository.ErrConflict) {
+			return nil, ErrUserExists
+		}
+		return nil, err
+	}
+	return s.issueTokenPair(ctx, user, "web")
 }
 
-func (r *UserRepository) FindByID(ctx context.Context, id string) (*model.User, error) {
- q := `SELECT id, username, email, password_hash, display_name, bio, avatar_url, created_at, updated_at
-       FROM users WHERE id = $1 AND deleted_at IS NULL`
-
- u := &model.User{}
- err := r.db.QueryRow(ctx, q, id).Scan(
-  &u.ID, &u.Username, &u.Email, &u.PasswordHash,
-  &u.DisplayName, &u.Bio, &u.AvatarURL, &u.CreatedAt, &u.UpdatedAt,
- )
- if errors.Is(err, pgx.ErrNoRows) {
-  return nil, ErrNotFound
- }
- return u, err
+func (s *AuthService) Login(ctx context.Context, req *model.LoginRequest) (*model.AuthResponse, error) {
+	user, err := s.users.FindByEmail(ctx, req.Email)
+	if err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			return nil, ErrInvalidCredentials
+		}
+		return nil, err
+	}
+	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.Password)); err != nil {
+		return nil, ErrInvalidCredentials
+	}
+	deviceID := req.DeviceID
+	if deviceID == "" {
+		deviceID = "web"
+	}
+	return s.issueTokenPair(ctx, user, deviceID)
 }
 
-// --- Refresh tokens ---
-
-type RefreshTokenRepository struct {
- db *pgxpool.Pool
+func (s *AuthService) Refresh(ctx context.Context, rawRefreshToken, deviceID string) (*model.AuthResponse, error) {
+	claims := &Claims{}
+	_, err := jwt.ParseWithClaims(rawRefreshToken, claims, func(t *jwt.Token) (any, error) {
+		return s.jwtSecret, nil
+	}, jwt.WithoutClaimsValidation())
+	if err != nil {
+		return nil, ErrTokenExpired
+	}
+	stored, err := s.tokens.FindByUserAndDevice(ctx, claims.UserID, deviceID)
+	if err != nil {
+		return nil, ErrTokenExpired
+	}
+	if err := bcrypt.CompareHashAndPassword([]byte(stored.TokenHash), []byte(rawRefreshToken)); err != nil {
+		return nil, ErrTokenExpired
+	}
+	_ = s.tokens.Delete(ctx, stored.ID)
+	user, err := s.users.FindByID(ctx, claims.UserID)
+	if err != nil {
+		return nil, err
+	}
+	return s.issueTokenPair(ctx, user, deviceID)
 }
 
-func NewRefreshTokenRepository(db *pgxpool.Pool) *RefreshTokenRepository {
- return &RefreshTokenRepository{db: db}
+func (s *AuthService) issueTokenPair(ctx context.Context, user *model.User, deviceID string) (*model.AuthResponse, error) {
+	now := time.Now().UTC()
+	accessClaims := &Claims{
+		UserID:   user.ID,
+		Username: user.Username,
+		RegisteredClaims: jwt.RegisteredClaims{
+			Subject:   user.ID,
+			IssuedAt:  jwt.NewNumericDate(now),
+			ExpiresAt: jwt.NewNumericDate(now.Add(accessTokenDuration)),
+		},
+	}
+	accessToken, err := jwt.NewWithClaims(jwt.SigningMethodHS256, accessClaims).SignedString(s.jwtSecret)
+	if err != nil {
+		return nil, err
+	}
+	rawRefresh, err := generateSecureToken(48)
+	if err != nil {
+		return nil, err
+	}
+	refreshHash, err := bcrypt.GenerateFromPassword([]byte(rawRefresh), bcryptCost)
+	if err != nil {
+		return nil, err
+	}
+	rt := &model.RefreshToken{
+		ID:        uuid.NewString(),
+		UserID:    user.ID,
+		TokenHash: string(refreshHash),
+		DeviceID:  deviceID,
+		ExpiresAt: now.Add(refreshTokenDuration),
+		CreatedAt: now,
+	}
+	if err := s.tokens.Save(ctx, rt); err != nil {
+		return nil, err
+	}
+	return &model.AuthResponse{
+		AccessToken:  accessToken,
+		RefreshToken: rawRefresh,
+		ExpiresIn:    int(accessTokenDuration.Seconds()),
+		User: model.UserDTO{
+			ID:          user.ID,
+			Username:    user.Username,
+			Email:       user.Email,
+			DisplayName: user.DisplayName,
+			AvatarURL:   user.AvatarURL,
+		},
+	}, nil
 }
 
-func (r *RefreshTokenRepository) Save(ctx context.Context, t *model.RefreshToken) error {
- q := `INSERT INTO refresh_tokens (id, user_id, token_hash, device_id, expires_at, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6)`
- _, err := r.db.Exec(ctx, q, t.ID, t.UserID, t.TokenHash, t.DeviceID, t.ExpiresAt, t.CreatedAt)
- return err
-}
-
-func (r *RefreshTokenRepository) FindByUserAndDevice(ctx context.Context, userID, deviceID string) (*model.RefreshToken, error) {
- q := `SELECT id, user_id, token_hash, device_id, expires_at, created_at
-       FROM refresh_tokens WHERE user_id = $1 AND device_id = $2 AND expires_at > NOW()`
- t := &model.RefreshToken{}
- err := r.db.QueryRow(ctx, q, userID, deviceID).Scan(
-  &t.ID, &t.UserID, &t.TokenHash, &t.DeviceID, &t.ExpiresAt, &t.CreatedAt,
- )
- if errors.Is(err, pgx.ErrNoRows) {
-  return nil, ErrNotFound
- }
- return t, err
-}
-
-func (r *RefreshTokenRepository) Delete(ctx context.Context, id string) error {
- _, err := r.db.Exec(ctx, DELETE FROM refresh_tokens WHERE id = $1, id)
- return err
-}
-
-func (r *RefreshTokenRepository) DeleteExpired(ctx context.Context) error {
- _, err := r.db.Exec(ctx, DELETE FROM refresh_tokens WHERE expires_at < $1, time.Now())
- return err
-}
-
-func isUniqueViolation(err error) bool {
- // pgx wraps pgconn.PgError; check SQLSTATE 23505
- if err == nil {
-  return false
- }
- return errors.Is(err, &pgxUniqueErr{})
-}
-
-// pgxUniqueErr is a helper to detect unique constraint violations.
-type pgxUniqueErr struct{}
-
-func (e *pgxUniqueErr) Error() string { return "unique violation" }
-func (e *pgxUniqueErr) Is(target error) bool {
- type pgErr interface{ SQLState() string }
- if pe, ok := target.(pgErr); ok {
-  return pe.SQLState() == "23505"
- }
- return false
+func generateSecureToken(n int) (string, error) {
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return base64.URLEncoding.EncodeToString(b), nil
 }

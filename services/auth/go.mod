@@ -3,6 +3,8 @@ module github.com/mimsewelt/1984/services/auth
 go 1.23
 
 require (
+	github.com/go-chi/chi/v5 v5.2.5
+	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.6.0
 	github.com/mimsewelt/1984/shared v0.0.0
