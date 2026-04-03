@@ -3,7 +3,9 @@ package service
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"time"
 
@@ -32,17 +34,26 @@ type Claims struct {
 	jwt.RegisteredClaims
 }
 
+type UserRepo interface {
+	Create(ctx context.Context, u *model.User) error
+	FindByEmail(ctx context.Context, email string) (*model.User, error)
+	FindByID(ctx context.Context, id string) (*model.User, error)
+}
+
+type TokenRepo interface {
+	Save(ctx context.Context, t *model.RefreshToken) error
+	FindByUserAndDevice(ctx context.Context, userID, deviceID string) (*model.RefreshToken, error)
+	Delete(ctx context.Context, id string) error
+	DeleteExpired(ctx context.Context) error
+}
+
 type AuthService struct {
-	users     *repository.UserRepository
-	tokens    *repository.RefreshTokenRepository
+	users     UserRepo
+	tokens    TokenRepo
 	jwtSecret []byte
 }
 
-func NewAuthService(
-	users *repository.UserRepository,
-	tokens *repository.RefreshTokenRepository,
-	jwtSecret string,
-) *AuthService {
+func NewAuthService(users UserRepo, tokens TokenRepo, jwtSecret string) *AuthService {
 	return &AuthService{users: users, tokens: tokens, jwtSecret: []byte(jwtSecret)}
 }
 
@@ -90,20 +101,36 @@ func (s *AuthService) Login(ctx context.Context, req *model.LoginRequest) (*mode
 
 func (s *AuthService) Refresh(ctx context.Context, rawRefreshToken, deviceID string) (*model.AuthResponse, error) {
 	claims := &Claims{}
-	_, err := jwt.ParseWithClaims(rawRefreshToken, claims, func(t *jwt.Token) (any, error) {
-		return s.jwtSecret, nil
-	}, jwt.WithoutClaimsValidation())
-	if err != nil {
+	_, err := jwt.ParseWithClaims(
+		rawRefreshToken, claims,
+		func(t *jwt.Token) (any, error) {
+			if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
+				return nil, jwt.ErrSignatureInvalid
+			}
+			return s.jwtSecret, nil
+		},
+		jwt.WithoutClaimsValidation(),
+	)
+	if err != nil || claims.UserID == "" {
 		return nil, ErrTokenExpired
 	}
+
 	stored, err := s.tokens.FindByUserAndDevice(ctx, claims.UserID, deviceID)
 	if err != nil {
 		return nil, ErrTokenExpired
 	}
-	if err := bcrypt.CompareHashAndPassword([]byte(stored.TokenHash), []byte(rawRefreshToken)); err != nil {
+
+	if time.Now().After(stored.ExpiresAt) {
 		return nil, ErrTokenExpired
 	}
+
+	if hashToken(rawRefreshToken) != stored.TokenHash {
+		return nil, ErrTokenExpired
+	}
+
+	// Invalidate old token before issuing new one (rotation).
 	_ = s.tokens.Delete(ctx, stored.ID)
+
 	user, err := s.users.FindByID(ctx, claims.UserID)
 	if err != nil {
 		return nil, err
@@ -113,11 +140,13 @@ func (s *AuthService) Refresh(ctx context.Context, rawRefreshToken, deviceID str
 
 func (s *AuthService) issueTokenPair(ctx context.Context, user *model.User, deviceID string) (*model.AuthResponse, error) {
 	now := time.Now().UTC()
+
 	accessClaims := &Claims{
 		UserID:   user.ID,
 		Username: user.Username,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   user.ID,
+			ID:        uuid.NewString(),
 			IssuedAt:  jwt.NewNumericDate(now),
 			ExpiresAt: jwt.NewNumericDate(now.Add(accessTokenDuration)),
 		},
@@ -126,18 +155,27 @@ func (s *AuthService) issueTokenPair(ctx context.Context, user *model.User, devi
 	if err != nil {
 		return nil, err
 	}
-	rawRefresh, err := generateSecureToken(48)
+
+	// Each refresh token gets a unique jti so identical claims produce different tokens.
+	refreshClaims := &Claims{
+		UserID:   user.ID,
+		Username: user.Username,
+		RegisteredClaims: jwt.RegisteredClaims{
+			Subject:   user.ID,
+			ID:        uuid.NewString(), // unique per token — prevents identical JWTs
+			IssuedAt:  jwt.NewNumericDate(now),
+			ExpiresAt: jwt.NewNumericDate(now.Add(refreshTokenDuration)),
+		},
+	}
+	rawRefresh, err := jwt.NewWithClaims(jwt.SigningMethodHS256, refreshClaims).SignedString(s.jwtSecret)
 	if err != nil {
 		return nil, err
 	}
-	refreshHash, err := bcrypt.GenerateFromPassword([]byte(rawRefresh), bcryptCost)
-	if err != nil {
-		return nil, err
-	}
+
 	rt := &model.RefreshToken{
 		ID:        uuid.NewString(),
 		UserID:    user.ID,
-		TokenHash: string(refreshHash),
+		TokenHash: hashToken(rawRefresh),
 		DeviceID:  deviceID,
 		ExpiresAt: now.Add(refreshTokenDuration),
 		CreatedAt: now,
@@ -145,6 +183,7 @@ func (s *AuthService) issueTokenPair(ctx context.Context, user *model.User, devi
 	if err := s.tokens.Save(ctx, rt); err != nil {
 		return nil, err
 	}
+
 	return &model.AuthResponse{
 		AccessToken:  accessToken,
 		RefreshToken: rawRefresh,
@@ -157,6 +196,11 @@ func (s *AuthService) issueTokenPair(ctx context.Context, user *model.User, devi
 			AvatarURL:   user.AvatarURL,
 		},
 	}, nil
+}
+
+func hashToken(token string) string {
+	h := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(h[:])
 }
 
 func generateSecureToken(n int) (string, error) {

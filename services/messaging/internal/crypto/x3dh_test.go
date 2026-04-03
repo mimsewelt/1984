@@ -59,7 +59,6 @@ func TestSignedPreKey_SignatureVerifies(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generate SPK: %v", err)
 	}
-	// ed25519.PrivateKey layout: [private(32) || public(32)]
 	ikSigningPub := []byte(ik.Signing)[32:]
 	if !crypto.VerifySPKSignature(ikSigningPub, spk.Public[:], sig) {
 		t.Error("SPK signature verification failed with correct key")
@@ -69,10 +68,8 @@ func TestSignedPreKey_SignatureVerifies(t *testing.T) {
 func TestSignedPreKey_TamperedSPK_FailsVerification(t *testing.T) {
 	ik, _ := crypto.GenerateIdentityKeyPair()
 	spk, sig, _ := crypto.GenerateSignedPreKey(ik, 1)
-
 	tampered := spk.Public
 	tampered[0] ^= 0xFF
-
 	ikPub := []byte(ik.Signing)[32:]
 	if crypto.VerifySPKSignature(ikPub, tampered[:], sig) {
 		t.Error("tampered SPK should fail signature verification")
@@ -83,21 +80,22 @@ func TestSignedPreKey_WrongIK_FailsVerification(t *testing.T) {
 	ik1, _ := crypto.GenerateIdentityKeyPair()
 	ik2, _ := crypto.GenerateIdentityKeyPair()
 	spk, sig, _ := crypto.GenerateSignedPreKey(ik1, 1)
-
 	wrongIKPub := []byte(ik2.Signing)[32:]
 	if crypto.VerifySPKSignature(wrongIKPub, spk.Public[:], sig) {
 		t.Error("wrong IK should fail SPK verification")
 	}
 }
 
+// buildBundle creates a PreKeyBundle with both DH and signing public keys separate.
 func buildBundle(t *testing.T, recipientIK crypto.IdentityKeyPair, spk crypto.KeyPair, spkSig []byte, opk *crypto.KeyPair) crypto.PreKeyBundle {
 	t.Helper()
 	bundle := crypto.PreKeyBundle{
-		UserID:       "recipient-user",
-		IdentityKey:  recipientIK.DH.Public[:],
-		SignedPreKey: spk.Public[:],
-		SPKSignature: spkSig,
-		SPKKeyID:     1,
+		UserID:         "recipient-user",
+		IdentityKeyDH:  recipientIK.DH.Public[:],          // Curve25519 for DH
+		IdentityKeySig: []byte(recipientIK.Signing)[32:],  // Ed25519 for signature verify
+		SignedPreKey:   spk.Public[:],
+		SPKSignature:   spkSig,
+		SPKKeyID:       1,
 	}
 	if opk != nil {
 		bundle.OneTimePreKey = opk.Public[:]
@@ -135,7 +133,6 @@ func TestX3DH_WithoutOPK_StillAgreesOnSecret(t *testing.T) {
 	recipientIK, _ := crypto.GenerateIdentityKeyPair()
 	spk, spkSig, _ := crypto.GenerateSignedPreKey(recipientIK, 1)
 	senderIK, _ := crypto.GenerateIdentityKeyPair()
-
 	bundle := buildBundle(t, recipientIK, spk, spkSig, nil)
 
 	senderSecret, ephPub, err := crypto.X3DHSender(senderIK, bundle)
@@ -192,7 +189,10 @@ func TestX3DH_SecretIs32Bytes(t *testing.T) {
 	senderIK, _ := crypto.GenerateIdentityKeyPair()
 	bundle := buildBundle(t, recipientIK, spk, spkSig, nil)
 
-	secret, ephPub, _ := crypto.X3DHSender(senderIK, bundle)
+	secret, ephPub, err := crypto.X3DHSender(senderIK, bundle)
+	if err != nil {
+		t.Fatalf("X3DH sender failed: %v", err)
+	}
 	if len(secret) != 32 {
 		t.Errorf("expected 32-byte shared secret, got %d", len(secret))
 	}
