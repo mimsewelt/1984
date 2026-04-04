@@ -1,8 +1,10 @@
 go 1.23
 
 use (
-	./services/gateway
-	./services/auth
-	./services/messaging
 	./shared
+	./services/auth
+	./services/gateway
+	./services/messaging
+	./tools/migrate
 )
+
