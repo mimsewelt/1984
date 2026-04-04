@@ -6,5 +6,6 @@ use (
 	./services/gateway
 	./services/messaging
 	./services/posts
+	./services/users
 	./tools/migrate
 )
