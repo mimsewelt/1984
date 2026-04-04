@@ -1,0 +1,108 @@
+version: "3.9"
+
+services:
+
+  # ── PostgreSQL ──────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: instagram_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB:       instagram
+      POSTGRES_USER:     instagram
+      POSTGRES_PASSWORD: instagram_secret
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U instagram"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ── Redis ───────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: instagram_redis
+    restart: unless-stopped
+    command: redis-server --requirepass redis_secret
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "redis_secret", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ── MinIO ───────────────────────────────────────────────────────────────────
+  minio:
+    image: minio/minio:latest
+    container_name: instagram_minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER:     minio_admin
+      MINIO_ROOT_PASSWORD: minio_secret
+    ports:
+      - "9000:9000"  # S3 API
+      - "9001:9001"  # Web Console
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Auth Service ─────────────────────────────────────────────────────────────
+  auth:
+    build:
+      context: .
+      dockerfile: infra/docker/auth.Dockerfile
+    container_name: instagram_auth
+    restart: unless-stopped
+    environment:
+      PORT:         9001
+      DATABASE_URL: postgres://instagram:instagram_secret@postgres:5432/instagram?sslmode=disable
+      JWT_SECRET:   change_me_in_production_min_32_chars!!
+      APP_ENV:      development
+    ports:
+      - "9001:9001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9001/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── API Gateway ──────────────────────────────────────────────────────────────
+  gateway:
+    build:
+      context: .
+      dockerfile: infra/docker/gateway.Dockerfile
+    container_name: instagram_gateway
+    restart: unless-stopped
+    environment:
+      PORT:              8080
+      JWT_SECRET:        change_me_in_production_min_32_chars!!
+      AUTH_SERVICE_URL:  http://auth:9001
+      POSTS_SERVICE_URL: http://posts:9002
+      USERS_SERVICE_URL: http://users:9003
+      MEDIA_SERVICE_URL: http://media:9004
+      MSG_SERVICE_URL:   http://messaging:9005
+      APP_ENV:           development
+    ports:
+      - "8080:8080"
+    depends_on:
+      auth:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  redis_data:
+  minio_data:
