@@ -1,0 +1,67 @@
+worker_processes 1;
+error_log /var/log/nginx/error.log warn;
+
+events {
+    worker_connections 256;
+}
+
+http {
+    include      /etc/nginx/mime.types;
+    default_type application/json;
+    server_tokens off;
+
+    upstream gateway {
+        server gateway:8080;
+    }
+
+    upstream minio {
+        server minio:9000;
+    }
+
+    server {
+        listen 80;
+        server_name _;
+
+        client_max_body_size 50M;
+
+        # Health
+        location /health {
+            proxy_pass http://gateway/health;
+            access_log off;
+        }
+
+        # API — no rate limiting in dev
+        location /api/ {
+            proxy_pass         http://gateway;
+            proxy_http_version 1.1;
+            proxy_set_header   Host              $host;
+            proxy_set_header   X-Real-IP         $remote_addr;
+            proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+            proxy_set_header   Connection        "";
+        }
+
+        # WebSocket
+        location /ws/ {
+            proxy_pass         http://gateway;
+            proxy_http_version 1.1;
+            proxy_set_header   Upgrade    $http_upgrade;
+            proxy_set_header   Connection "upgrade";
+            proxy_set_header   Host       $host;
+            proxy_read_timeout 3600s;
+        }
+
+        # MinIO media
+        location /media/ {
+            proxy_pass http://minio/instagram-media/;
+        }
+
+        # Dev: proxy to React dev server (port 3000)
+        location / {
+            proxy_pass         http://host.docker.internal:3000;
+            proxy_http_version 1.1;
+            proxy_set_header   Upgrade    $http_upgrade;
+            proxy_set_header   Connection "upgrade";
+            proxy_set_header   Host       $host;
+        }
+    }
+}

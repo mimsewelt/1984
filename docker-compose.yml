@@ -2,7 +2,7 @@ version: "3.9"
 
 services:
 
-  # ── PostgreSQL ──────────────────────────────────────────────────────────────
+  # ── PostgreSQL ───────────────────────────────────────────────────────────────
   postgres:
     image: postgres:16-alpine
     container_name: instagram_postgres
@@ -21,7 +21,7 @@ services:
       timeout: 5s
       retries: 5
 
-  # ── Redis ───────────────────────────────────────────────────────────────────
+  # ── Redis ────────────────────────────────────────────────────────────────────
   redis:
     image: redis:7-alpine
     container_name: instagram_redis
@@ -37,7 +37,7 @@ services:
       timeout: 5s
       retries: 5
 
-  # ── MinIO ───────────────────────────────────────────────────────────────────
+  # ── MinIO ────────────────────────────────────────────────────────────────────
   minio:
     image: minio/minio:latest
     container_name: instagram_minio
@@ -47,12 +47,12 @@ services:
       MINIO_ROOT_USER:     minio_admin
       MINIO_ROOT_PASSWORD: minio_secret
     ports:
-      - "9000:9000"  # S3 API
-      - "9001:9001"  # Web Console
+      - "9000:9000"
+      - "9001:9001"
     volumes:
       - minio_data:/data
     healthcheck:
-      test: ["CMD", "mc", "ready", "local"]
+      test: ["CMD-SHELL", "curl -f http://localhost:9000/minio/health/live || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -69,8 +69,6 @@ services:
       DATABASE_URL: postgres://instagram:instagram_secret@postgres:5432/instagram?sslmode=disable
       JWT_SECRET:   change_me_in_production_min_32_chars!!
       APP_ENV:      development
-    ports:
-      - "9001:9001"
     depends_on:
       postgres:
         condition: service_healthy
@@ -80,7 +78,47 @@ services:
       timeout: 5s
       retries: 5
 
-  # ── API Gateway ──────────────────────────────────────────────────────────────
+  # ── Posts Service ─────────────────────────────────────────────────────────────
+  posts:
+    build:
+      context: .
+      dockerfile: infra/docker/posts.Dockerfile
+    container_name: instagram_posts
+    restart: unless-stopped
+    environment:
+      PORT:         9002
+      DATABASE_URL: postgres://instagram:instagram_secret@postgres:5432/instagram?sslmode=disable
+      APP_ENV:      development
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9002/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Users Service ─────────────────────────────────────────────────────────────
+  users:
+    build:
+      context: .
+      dockerfile: infra/docker/users.Dockerfile
+    container_name: instagram_users
+    restart: unless-stopped
+    environment:
+      PORT:         9003
+      DATABASE_URL: postgres://instagram:instagram_secret@postgres:5432/instagram?sslmode=disable
+      APP_ENV:      development
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9003/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── API Gateway ───────────────────────────────────────────────────────────────
   gateway:
     build:
       context: .
@@ -96,11 +134,32 @@ services:
       MEDIA_SERVICE_URL: http://media:9004
       MSG_SERVICE_URL:   http://messaging:9005
       APP_ENV:           development
-    ports:
-      - "8080:8080"
     depends_on:
       auth:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Nginx ─────────────────────────────────────────────────────────────────────
+  nginx:
+    image: nginx:1.25-alpine
+    container_name: instagram_nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - ./infra/nginx/nginx.dev.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      gateway:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
 volumes:
   postgres_data:

@@ -87,3 +87,9 @@ build:
 
 lint:
 	golangci-lint run ./services/...
+
+nginx-test:
+	docker run --rm -v $(PWD)/infra/nginx/nginx.dev.conf:/etc/nginx/nginx.conf:ro nginx:1.25-alpine nginx -t
+
+nginx-reload:
+	docker exec instagram_nginx nginx -s reload
