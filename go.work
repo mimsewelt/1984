@@ -4,6 +4,7 @@ use (
 	./shared
 	./services/auth
 	./services/gateway
+	./services/media
 	./services/messaging
 	./services/posts
 	./services/users

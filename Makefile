@@ -15,6 +15,10 @@ test-all:
 	@echo "=== Posts ==="
 	cd services/posts && go test ./... -v -count=1
 	@echo ""
+		@echo ""
+	@echo "=== Media ==="
+	cd services/media && go test ./... -v -count=1
+	@echo ""
 	@echo "=== Users ==="
 	cd services/users && go test ./... -v -count=1
 
@@ -93,3 +97,6 @@ nginx-test:
 
 nginx-reload:
 	docker exec instagram_nginx nginx -s reload
+
+test-media:
+	cd services/media && go test ./... -v -count=1 -race
