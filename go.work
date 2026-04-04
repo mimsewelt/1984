@@ -5,6 +5,6 @@ use (
 	./services/auth
 	./services/gateway
 	./services/messaging
+	./services/posts
 	./tools/migrate
 )
-
