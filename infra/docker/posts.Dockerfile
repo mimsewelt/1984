@@ -2,14 +2,15 @@ FROM golang:1.23-alpine AS builder
 
 WORKDIR /app
 
-COPY go.work go.work.sum ./
 COPY shared/go.mod shared/go.sum ./shared/
 COPY services/posts/go.mod services/posts/go.sum ./services/posts/
 
-RUN go work sync
-
 COPY shared/ ./shared/
 COPY services/posts/ ./services/posts/
+
+RUN go work init && \
+    go work use ./shared ./services/posts && \
+    go work sync
 
 RUN CGO_ENABLED=0 GOOS=linux go build \
     -ldflags="-w -s" \
